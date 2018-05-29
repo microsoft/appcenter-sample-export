@@ -1,14 +1,38 @@
+# App Center Export Parser
+This repo contains sample .NET Core library for parsing Export blobs created via App Center Continuous Export. 
 
-# Contributing
+## Sample 1 - Console App to forward logs for specific users to their account
+This sample is located under `sample-console-app`. The console app can be used to selectively forward logs from one storage account to another. This can be useful for satisfying one of GDPR export requests.
 
-This project welcomes contributions and suggestions.  Most contributions require you to agree to a
-Contributor License Agreement (CLA) declaring that you have the right to, and actually do, grant us
-the rights to use your contribution. For details, visit https://cla.microsoft.com.
+To build the sample:
+```
+dotnet build export-parser.sln
+```
 
-When you submit a pull request, a CLA-bot will automatically determine whether you need to provide
-a CLA and decorate the PR appropriately (e.g., label, comment). Simply follow the instructions
-provided by the bot. You will only need to do this once across all repos using our CLA.
+To run the sample:
+```
+sample-console-app.exe <installId> <blob storage connection string where export is pointing to> <blob storage connection string where filtered data will go> <output container name>
+```
 
-This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/).
-For more information see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/) or
-contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
+Note: since the sample downloads each export blob to a local machine, it will be singnificantly faster if the code was executed on Azure VM in the same data center as the storage account.
+
+## Sample 2 - Azure Function to forward logs for specific users to their account
+This sample is located under `sample-azure-function`. This Azure Function is similar to the console app sample, however is can be used to selectively forward logs on an ongoing basis.
+
+To build the sample:
+```
+dotnet build export-parser.sln
+```
+
+To deploy the function refer to [this article](https://docs.microsoft.com/en-us/azure/azure-functions/functions-develop-vs).
+
+## Sample 3 - Continuously stream export data
+
+This sample shows how to continuously stream data from your export Azure storage container to [Event Hubs](https://azure.microsoft.com/en-us/services/event-hubs/) and to another Azure storage container.
+This sample is located under `export-streaming`.
+This sample is a console application that creates an observable that parses exported data, and multicasts the observable data into both an Event Hub and an Azure storage container.
+
+To build the sample:
+```
+dotnet build export-streaming.sln
+```
