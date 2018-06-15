@@ -17,7 +17,7 @@ namespace AppCenter.Samples
             AccessCondition = DefaultAccessCondition;
             BlobRequestOptions = DefaultBlobRequestOptions;
             OperationContext = DefaultOperationContext;
-            MinLatency = TimeSpan.FromMinutes(10);
+            MinLatency = TimeSpan.FromMinutes(20);
         }
 
         /// <summary>
