@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reactive;
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
 using System.Threading;
@@ -14,28 +15,28 @@ namespace AppCenter.Samples
 {
     public static class ExportObservable
     {
-        public static IObservable<(DateTimeOffset Timestamp, IList<DeviceLog> Logs)> CreateExport(this CloudBlobContainer container, DateTimeOffset start)
+        public static IObservable<Timestamped<DeviceLog[]>> CreateExport(this CloudBlobContainer container, DateTimeOffset start)
             => container.CreateExport(start, DateTimeOffset.MaxValue, Scheduler.Default);
 
-        public static IObservable<(DateTimeOffset Timestamp, IList<DeviceLog> Logs)> CreateExport(this CloudBlobContainer container, DateTimeOffset start, DateTimeOffset finish)
+        public static IObservable<Timestamped<DeviceLog[]>> CreateExport(this CloudBlobContainer container, DateTimeOffset start, DateTimeOffset finish)
             => container.CreateExport(start, finish, Scheduler.Default);
 
-        public static IObservable<(DateTimeOffset Timestamp, IList<DeviceLog> Logs)> CreateExport(this CloudBlobContainer container, DateTimeOffset start, IScheduler scheduler)
+        public static IObservable<Timestamped<DeviceLog[]>> CreateExport(this CloudBlobContainer container, DateTimeOffset start, IScheduler scheduler)
             => container.CreateExport(start, DateTimeOffset.MaxValue, new ExportOptions(), scheduler);
 
-        public static IObservable<(DateTimeOffset Timestamp, IList<DeviceLog> Logs)> CreateExport(this CloudBlobContainer container, DateTimeOffset start, DateTimeOffset finish, IScheduler scheduler)
+        public static IObservable<Timestamped<DeviceLog[]>> CreateExport(this CloudBlobContainer container, DateTimeOffset start, DateTimeOffset finish, IScheduler scheduler)
             => container.CreateExport(start, finish, new ExportOptions(), scheduler);
 
-        public static IObservable<(DateTimeOffset Timestamp, IList<DeviceLog> Logs)> CreateExport(this CloudBlobContainer container, DateTimeOffset start, ExportOptions options, IScheduler scheduler)
+        public static IObservable<Timestamped<DeviceLog[]>> CreateExport(this CloudBlobContainer container, DateTimeOffset start, ExportOptions options, IScheduler scheduler)
             => container.CreateExport(start, DateTimeOffset.MaxValue, options, scheduler);
 
-        public static IObservable<(DateTimeOffset Timestamp, IList<DeviceLog> Logs)> CreateExport(this CloudBlobContainer container, DateTimeOffset start, DateTimeOffset finish, ExportOptions options)
+        public static IObservable<Timestamped<DeviceLog[]>> CreateExport(this CloudBlobContainer container, DateTimeOffset start, DateTimeOffset finish, ExportOptions options)
             => container.CreateExport(start, finish, options, Scheduler.Default);
 
-        public static IObservable<(DateTimeOffset Timestamp, IList<DeviceLog> Logs)> CreateExport(this CloudBlobContainer container, DateTimeOffset start, ExportOptions options)
+        public static IObservable<Timestamped<DeviceLog[]>> CreateExport(this CloudBlobContainer container, DateTimeOffset start, ExportOptions options)
             => container.CreateExport(start, DateTimeOffset.MaxValue, options, Scheduler.Default);
 
-        public static IObservable<(DateTimeOffset Timestamp, IList<DeviceLog> Logs)> CreateExport(this CloudBlobContainer container, DateTimeOffset start, DateTimeOffset finish, ExportOptions options, IScheduler scheduler)
+        public static IObservable<Timestamped<DeviceLog[]>> CreateExport(this CloudBlobContainer container, DateTimeOffset start, DateTimeOffset finish, ExportOptions options, IScheduler scheduler)
         {
             if (start > finish)
                 throw new ArgumentException("start must be less than finish", nameof(finish));
@@ -43,50 +44,49 @@ namespace AppCenter.Samples
             return container.CreateJsonExport(start, finish, options, scheduler)
                 .Select(_ =>
                 {
-                    var (timestamp, json) = _;
-                    if (string.IsNullOrEmpty(json))
-                        return (Timestamp: timestamp, Logs: Array.Empty<DeviceLog>() as IList<DeviceLog>);
+                    if (string.IsNullOrEmpty(_.Value))
+                        return new Timestamped<DeviceLog[]>(Array.Empty<DeviceLog>(), _.Timestamp);
                     try
                     {
-                        return (Timestamp: timestamp, Logs: JsonConvert.DeserializeObject<DeviceLog[]>(json) as IList<DeviceLog>);
+                        return new Timestamped<DeviceLog[]>(JsonConvert.DeserializeObject<DeviceLog[]>(_.Value), _.Timestamp);
                     }
                     catch (Exception exception)
                     {
-                        Log.Error(exception, "Error deserializing {JSON} as a device log", json);
-                        return (Timestamp: timestamp, Logs: Array.Empty<DeviceLog>() as IList<DeviceLog>);
+                        Log.Error(exception, "Error deserializing {JSON} as a device log", _.Value);
+                        return new Timestamped<DeviceLog[]>(Array.Empty<DeviceLog>(), _.Timestamp);
                     }
                 });
         }
 
-        public static IObservable<(DateTimeOffset Timestamp, string Json)> CreateJsonExport(this CloudBlobContainer container, DateTimeOffset start, DateTimeOffset finish)
+        public static IObservable<Timestamped<string>> CreateJsonExport(this CloudBlobContainer container, DateTimeOffset start, DateTimeOffset finish)
             => container.CreateJsonExport(start, finish, Scheduler.Default);
 
-        public static IObservable<(DateTimeOffset Timestamp, string Json)> CreateJsonExport(this CloudBlobContainer container, DateTimeOffset start)
+        public static IObservable<Timestamped<string>> CreateJsonExport(this CloudBlobContainer container, DateTimeOffset start)
             => container.CreateJsonExport(start, DateTimeOffset.MaxValue, Scheduler.Default);
 
-        public static IObservable<(DateTimeOffset Timestamp, string Json)> CreateJsonExport(this CloudBlobContainer container, DateTimeOffset start, DateTimeOffset finish, IScheduler scheduler)
+        public static IObservable<Timestamped<string>> CreateJsonExport(this CloudBlobContainer container, DateTimeOffset start, DateTimeOffset finish, IScheduler scheduler)
             => container.CreateJsonExport(start, finish, new ExportOptions(), scheduler);
 
-        public static IObservable<(DateTimeOffset Timestamp, string Json)> CreateJsonExport(this CloudBlobContainer container, DateTimeOffset start, DateTimeOffset finish, ExportOptions options, IScheduler scheduler)
+        public static IObservable<Timestamped<string>> CreateJsonExport(this CloudBlobContainer container, DateTimeOffset start, DateTimeOffset finish, ExportOptions options, IScheduler scheduler)
             => container.CreateJsonExportObservables(start, finish, options, scheduler)
-                .Select(_ => _.Observable.Select(json => (Timestamp: _.Timestamp, Json: json)))
+                .Select(_ => _.Value.Select(json => new Timestamped<string>(json, _.Timestamp)))
                 .Concat();
 
-        public static IObservable<(DateTimeOffset Timestamp, string Json)> CreateJsonExport(this CloudBlobContainer container, DateTimeOffset start, IScheduler scheduler)
+        public static IObservable<Timestamped<string>> CreateJsonExport(this CloudBlobContainer container, DateTimeOffset start, IScheduler scheduler)
             => container.CreateJsonExportObservables(start, DateTimeOffset.MaxValue, new ExportOptions(), scheduler)
-                .Select(_ => _.Observable.Select(json => (Timestamp: _.Timestamp, Json: json)))
+                .Select(_ => _.Value.Select(json => new Timestamped<string>(json, _.Timestamp)))
                 .Concat();
 
-        public static IObservable<(DateTimeOffset Timestamp, IObservable<string> Observable)> CreateJsonExportObservables(this CloudBlobContainer container, DateTimeOffset start, DateTimeOffset finish)
+        public static IObservable<Timestamped<IObservable<string>>> CreateJsonExportObservables(this CloudBlobContainer container, DateTimeOffset start, DateTimeOffset finish)
             => container.CreateJsonExportObservables(start, finish, Scheduler.Default);
 
-        public static IObservable<(DateTimeOffset Timestamp, IObservable<string> Observable)> CreateJsonExportObservables(this CloudBlobContainer container, DateTimeOffset start, DateTimeOffset finish, IScheduler scheduler)
+        public static IObservable<Timestamped<IObservable<string>>> CreateJsonExportObservables(this CloudBlobContainer container, DateTimeOffset start, DateTimeOffset finish, IScheduler scheduler)
             => container.CreateJsonExportObservables(start, finish, new ExportOptions(), scheduler);
 
-        public static IObservable<(DateTimeOffset Timestamp, IObservable<string> Observable)> CreateJsonExportObservables(this CloudBlobContainer container, DateTimeOffset start, IScheduler scheduler)
+        public static IObservable<Timestamped<IObservable<string>>> CreateJsonExportObservables(this CloudBlobContainer container, DateTimeOffset start, IScheduler scheduler)
             => container.CreateJsonExportObservables(start, DateTimeOffset.MaxValue, new ExportOptions(), scheduler);
 
-        public static IObservable<(DateTimeOffset Timestamp, IObservable<string> Observable)> CreateJsonExportObservables(this CloudBlobContainer container, DateTimeOffset start, ExportOptions options, IScheduler scheduler)
+        public static IObservable<Timestamped<IObservable<string>>> CreateJsonExportObservables(this CloudBlobContainer container, DateTimeOffset start, ExportOptions options, IScheduler scheduler)
             => container.CreateJsonExportObservables(start, DateTimeOffset.MaxValue, options, scheduler);
 
         public static IObservable<DateTimeOffset> GetExportTicks(DateTimeOffset start, DateTimeOffset finish, ExportOptions options, IScheduler scheduler)
@@ -124,7 +124,7 @@ namespace AppCenter.Samples
             });
         }
 
-        public static IObservable<(DateTimeOffset Timestamp, IObservable<string> Observable)> CreateJsonExportObservables(this CloudBlobContainer container, DateTimeOffset start, DateTimeOffset finish, ExportOptions options, IScheduler scheduler)
+        public static IObservable<Timestamped<IObservable<string>>> CreateJsonExportObservables(this CloudBlobContainer container, DateTimeOffset start, DateTimeOffset finish, ExportOptions options, IScheduler scheduler)
         {
             const int maxResults = 100;
             return GetExportTicks(start, finish, options, scheduler)
@@ -132,7 +132,7 @@ namespace AppCenter.Samples
                 {
                     var observable = container
                         .CreateMinuteJsonExport(timestamp, maxResults, options, scheduler)
-                        .Select(blob =>
+                        .SelectMany(blob =>
                         {
                             try
                             {
@@ -143,9 +143,8 @@ namespace AppCenter.Samples
                                 Log.Error(exception, "Error downloading from {SourceBLOB}", blob.Uri);
                                 return Task.FromResult(string.Empty);
                             }
-                        })
-                        .Concat();
-                    return (Timestamp: timestamp, Observable: observable);
+                        });
+                    return new Timestamped<IObservable<string>>(observable, timestamp);
                 });
         }
 

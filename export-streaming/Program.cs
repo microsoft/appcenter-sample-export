@@ -4,6 +4,7 @@ using System.Collections.Immutable;
 using System.Data.HashFunction.MurmurHash;
 using System.Diagnostics;
 using System.Linq;
+using System.Reactive;
 using System.Reactive.Linq;
 using System.Text;
 using System.Threading;
@@ -21,17 +22,11 @@ namespace AppCenter.Samples
 {
     internal static class Program
     {
-        private const int BlobQueueLength = 10;
         private const string InputConnectionString = "<AppCenter export storage account>";
         private const string InputContainerName = "archive";
         private const string OutputConnectionString = "<output storage account connection string>";
         private const string OutputContainerName = "<output container name>";
         private const string OutputEventHubsConnectionString = "<event hub connection string>";
-        private const int PartitionQueueLength = 100;
-
-        private static int DegreeOfParallelism { get; } = Environment.ProcessorCount;
-
-        private static TimeSpan StreamingTime { get; } = TimeSpan.FromMinutes(30);
 
         public static async Task Main()
         {
@@ -39,20 +34,22 @@ namespace AppCenter.Samples
                 .WriteTo.Console()
                 .CreateLogger();
 
-            using (var cts = new CancellationTokenSource(StreamingTime))
+            using (var cts = new CancellationTokenSource())
             {
                 var cancellationToken = cts.Token;
                 var start = new DateTimeOffset(2018, 6, 1, 0, 0, 0, TimeSpan.Zero);
-                var exportOptions = new ExportOptions();
+                var options = new ExportOptions();
+                var logCount = 0UL;
+                var timer = new Stopwatch();
 
                 // Setup data source
                 var inputContainer = await CreateInputContainerAsync(InputConnectionString, cts.Token).ConfigureAwait(false);
 
-                // Create the core observable
-                var observable = inputContainer.CreateExport(start, exportOptions).Publish();
+                // Create the core observable, and publish it to support multiple subscribers
+                var observable = inputContainer.CreateExport(start, options).Publish();
 
                 //// Setup BLOB output
-                var blobSink = await CreateBlobSink(OutputConnectionString, OutputContainerName, BlobQueueLength, exportOptions, cancellationToken);
+                var blobSink = await CreateBlobSink(OutputConnectionString, OutputContainerName, options, cancellationToken);
                 observable
                     .Subscribe(
                         onNext: _ => blobSink.Post(_),
@@ -61,21 +58,21 @@ namespace AppCenter.Samples
                         token: cancellationToken);
 
                 // Setup Event Hubs output
-                var eventHubSinks = await CreateEventHubsSink(OutputEventHubsConnectionString, PartitionQueueLength);
+                var eventHubSinks = await CreateEventHubsSink(OutputEventHubsConnectionString, options);
                 observable
-                    .SelectMany(_ => _.Logs)
+                    .SelectMany(_ => _.Value)
                     .GroupBy(deviceLog => GetPartition(deviceLog, (uint) eventHubSinks.Length))
                     .SelectMany(partition =>
                         partition
-                            .Buffer(TimeSpan.FromSeconds(1), 50)
+                            .Buffer(options.EventHubBufferTimeSpan, options.EventHubBufferCount)
                             .Where(batch => batch.Count > 0)
-                            .Select(batch => (PartitionId: (int) partition.Key, Batch: batch)))
+                            .Select(batch => (PartitionId: (int) partition.Key, Payload: batch)))
                     .Subscribe(
-                        onNext: _ =>
+                        onNext: batch =>
                         {
                             try
                             {
-                                eventHubSinks[_.PartitionId].Post(_.Batch);
+                                eventHubSinks[batch.PartitionId].Post(batch.Payload);
                             }
                             catch (Exception exception)
                             {
@@ -89,13 +86,21 @@ namespace AppCenter.Samples
                 // Setup console output
                 observable
                     .Subscribe(
-                        onNext: _ => WriteLine("{0}: {1} log(s)", _.Timestamp, _.Logs.Count),
+                        onNext: _ =>
+                        {
+                            var elapsed = timer.Elapsed;
+                            var batchSize = (ulong) _.Value.Length;
+                            logCount += batchSize;
+                            var rate = Math.Round(logCount / elapsed.TotalSeconds);
+                            Log.Information("{Timestamp}: Received a batch of {BatchSize:N0} log(s). Total logs={TotalLogs:N0}. Average rate={LogRate:N0} logs/sec", _.Timestamp, batchSize, logCount, rate);
+                        },
                         onError: e => Log.Error(e, "Event Hubs target stream completed in error"),
                         onCompleted: () => Log.Information("Event Hubs target stream completed"),
                         token: cancellationToken);
 
                 using (observable.Connect())
                 {
+                    timer.Start();
                     WriteLine("Press ENTER to terminate...");
                     ReadLine();
                     cts.Cancel();
@@ -107,13 +112,13 @@ namespace AppCenter.Samples
 
         private static IMurmurHash3 HashFunc { get; } = MurmurHash3Factory.Instance.Create(new MurmurHash3Config { HashSizeInBits = 32 });
 
-        private static async Task<ImmutableArray<ITargetBlock<IList<DeviceLog>>>> CreateEventHubsSink(string connectionString, int queueLength)
+        private static async Task<ImmutableArray<ITargetBlock<IList<DeviceLog>>>> CreateEventHubsSink(string connectionString, ExportOptions options)
         {
             var client = EventHubClient.CreateFromConnectionString(connectionString);
             var information = await client.GetRuntimeInformationAsync().ConfigureAwait(false);
             var senderOptions = new ExecutionDataflowBlockOptions
             {
-                BoundedCapacity = queueLength,
+                BoundedCapacity = options.PartitionQueueLength,
                 EnsureOrdered = true,
                 SingleProducerConstrained = true
             };
@@ -132,12 +137,12 @@ namespace AppCenter.Samples
                             {
                                 using (var eventData = new EventData(bytes))
                                     await sender.SendAsync(eventData).ConfigureAwait(false);
-                                Log.Information("Sent a {Bytes} byte device log batch to Event Hub partition {PartitionId} in {EventHubPartitionSendTime}", bytes.Length, partitionId, timer.Elapsed);
+                                Log.Information("Sent a {Bytes:N0} byte device log batch to Event Hub partition {PartitionId} in {EventHubPartitionSendTime}", bytes.Length, partitionId, timer.Elapsed);
                             }
                             catch (Exception exception)
                             {
                                 // Swallow errors
-                                Log.Error(exception, "Error sending {Bytes} byte device log batch to Event Hub partition {PartitionId}", bytes.Length, partitionId);
+                                Log.Error(exception, "Error sending {Bytes:N0} byte device log batch to Event Hub partition {PartitionId}", bytes.Length, partitionId);
                             }
                         },
                         senderOptions);
@@ -169,33 +174,31 @@ namespace AppCenter.Samples
 
         #region Azure BLOB features
 
-        private static async Task<ActionBlock<(DateTimeOffset Timestamp, IList<DeviceLog> Logs)>> CreateBlobSink(
+        private static async Task<ActionBlock<Timestamped<DeviceLog[]>>> CreateBlobSink(
             string connectionString,
             string containerName,
-            int queueLength,
-            ExportOptions exportOptions,
+            ExportOptions options,
             CancellationToken cancellationToken)
         {
             var outputContainer = await CreateContainerAsync(connectionString, containerName, true, cancellationToken).ConfigureAwait(false);
             var serializer = new JsonSerializer { Formatting = Formatting.None };
-            var jsonBlobWriter = new JsonBlobWriter(outputContainer, serializer, exportOptions, Encoding.UTF8);
+            var jsonBlobWriter = new JsonBlobWriter(outputContainer, serializer, options, Encoding.UTF8);
             var dataflowBlockOptions = new ExecutionDataflowBlockOptions
             {
-                BoundedCapacity = queueLength,
-                MaxDegreeOfParallelism = DegreeOfParallelism
+                BoundedCapacity = options.BlobQueueLength,
+                MaxDegreeOfParallelism = options.DegreeOfParallelism
             };
-            var blobSink = new ActionBlock<(DateTimeOffset Timestamp, IList<DeviceLog> Logs)>(async _ =>
+            var blobSink = new ActionBlock<Timestamped<DeviceLog[]>>(async _ =>
                 {
                     var timer = Stopwatch.StartNew();
-                    var (timestamp, logs) = _;
                     try
                     {
-                        await jsonBlobWriter.WriteAsync(timestamp, logs, cancellationToken).ConfigureAwait(false);
-                        Log.Information("Wrote {LogCount} log(s) to Azure BLOB container {ContainerName} in {BlobWriteTime}", logs.Count, containerName, timer.Elapsed);
+                        await jsonBlobWriter.WriteAsync(_.Timestamp, _.Value, cancellationToken).ConfigureAwait(false);
+                        Log.Information("Wrote {LogCount:N0} log(s) to Azure BLOB container {ContainerName} in {BlobWriteTime}", _.Value.Length, containerName, timer.Elapsed);
                     }
                     catch (Exception exception)
                     {
-                        Log.Error(exception, "Error writing logs to Azure storage container {Container}", outputContainer.Uri);
+                        Log.Error(exception, "Error writing {LogCount:N0} logs to Azure storage container {Container}", _.Value.Length, outputContainer.Uri);
                     }
                 },
                 dataflowBlockOptions);
