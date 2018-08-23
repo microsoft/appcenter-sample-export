@@ -152,7 +152,7 @@ namespace AppCenter.Samples
         {
             const bool useFlatBlobListing = true;
             const BlobListingDetails blobListingDetails = BlobListingDetails.None;
-            var prefix = $"{timestamp:yyyy/MM/dd/HH/mm}/logs";
+            var prefix = $"{timestamp.ToString("yyyy/MM/dd/HH/mm", CultureInfo.InvariantCulture)}/logs";
             return Observable.Create<CloudBlockBlob>(observer =>
             {
                 return scheduler.ScheduleAsync(async (schdlr, cancellationToken) =>
